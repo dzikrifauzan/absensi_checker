@@ -57,5 +57,5 @@ CONFIG = {
     # ──────────────────────────────────────────────
 
     # Folder tempat file XLS didownload
-    "DOWNLOAD_DIR": os.getenv("DOWNLOAD_DIR", "/home/ubuntu/absensi_checker/downloads"),
+    "DOWNLOAD_DIR": os.getenv("DOWNLOAD_DIR", "home/absensi_checker/downloads"),
 }

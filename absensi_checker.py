@@ -36,7 +36,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[
-        logging.FileHandler("absensi_checker.log"),
+        logging.FileHandler("logs/absensi_checker.log"),
         logging.StreamHandler()
     ]
 )
