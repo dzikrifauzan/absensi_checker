@@ -1,0 +1,11 @@
+.env
+venv/
+downloads/
+logs/
+__pycache__/
+*.pyc
+*.log
+*.xls
+*.xlsx
+screenshots/
+absensi_checker.log
