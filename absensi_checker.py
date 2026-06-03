@@ -100,7 +100,6 @@ class HRPortalScraper:
         log.info(f"Membuka HR Portal: {CONFIG['HR_PORTAL_URL']}")
         self.driver.get(CONFIG["HR_PORTAL_URL"])
         self._wait(5)
-        self._shot("01_login_page")
 
         wait = WebDriverWait(self.driver, 30)
 
@@ -117,14 +116,12 @@ class HRPortalScraper:
         password_field.clear()
         password_field.send_keys(CONFIG["HR_PASSWORD"])
         self._wait(1)
-        self._shot("02_credentials_filled")
 
         login_btn = wait.until(
             EC.element_to_be_clickable((By.CSS_SELECTOR, CONFIG["LOGIN_BUTTON_CSS"]))
         )
         login_btn.click()
         self._wait(5)
-        self._shot("03_after_login")
 
         log.info(f"Login berhasil. URL: {self.driver.current_url}")
 
@@ -139,7 +136,6 @@ class HRPortalScraper:
         log.info(f"Navigasi ke halaman absensi {year}-{month:02d}")
         self.driver.get(CONFIG["ATTENDANCE_PAGE_URL"])
         self._wait(3)
-        self._shot("04_attendance_page")
 
         wait = WebDriverWait(self.driver, 20)
         wait.until(EC.visibility_of_element_located((By.ID, "periode-text")))
@@ -152,7 +148,6 @@ class HRPortalScraper:
             periode_date
         )
         self._wait(1)
-        self._shot("05_periode_set")
 
         # Verifikasi getParam() return periode yang benar
         param = self.driver.execute_script("return JSON.stringify(getParam())")
@@ -162,7 +157,6 @@ class HRPortalScraper:
         search_btn = wait.until(EC.presence_of_element_located((By.ID, "search-button")))
         self.driver.execute_script("arguments[0].click()", search_btn)
         self._wait(5)
-        self._shot("06_after_search")
 
         # Verifikasi data sudah reload ke periode yang benar
         param_after = self.driver.execute_script("return JSON.stringify(getParam())")
@@ -172,7 +166,6 @@ class HRPortalScraper:
     def download_excel(self) -> Path:
         """Klik tombol Unduh dan tunggu file terdownload."""
         wait = WebDriverWait(self.driver, 15)
-        self._shot("07_before_download")
 
         # Catat file yang sudah ada SEBELUM download
         existing_files = set(self.download_dir.glob("Kehadiran_Individu_*.xls*"))
@@ -181,14 +174,10 @@ class HRPortalScraper:
         download_btn = wait.until(
             EC.element_to_be_clickable((By.ID, "download-button"))
         )
-        self._shot("08_download_button_found")
-
         self.driver.execute_script("arguments[0].click()", download_btn)
         log.info("Tombol Unduh diklik, menunggu download...")
-        self._shot("09_download_clicked")
 
         downloaded_file = self._wait_for_download(existing_files=existing_files, timeout=30)
-        self._shot("10_download_done")
 
         log.info(f"File berhasil diunduh: {downloaded_file}")
         return downloaded_file
