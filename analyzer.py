@@ -9,15 +9,24 @@ Struktur file XLS yang diharapkan (sesuai sample Kehadiran_Individu_*.xls):
   - Row 12 : Sub-sub-header
   - Row 13+ : Data per tanggal
 
-Kolom yang dipakai:
+Kolom yang dipakai (0-indexed, dikonfirmasi dari file asli):
   col[0]  : Tanggal
   col[1]  : Kode Shift (FRE1=libur, PLA1=kerja, dll)
   col[2]  : Jam Masuk Standar
   col[3]  : Jam Keluar Standar
-  col[4]  : Jam Masuk ARS (aktual)
-  col[5]  : Jam Keluar ARS (aktual)
-  col[6]  : Kode Masuk (A, S, I, T, dll)
-  col[7]  : Kode Keluar
+  col[4]  : Jam Masuk ARS (aktual, sebelum koreksi)
+  col[5]  : Jam Keluar ARS (aktual, sebelum koreksi)
+  col[6]  : Kode Masuk (sebelum koreksi)
+  col[7]  : Kode Keluar (sebelum koreksi)
+  col[8]  : Koreksi Jam Masuk (kalau ada pengajuan koreksi)
+  col[9]  : Koreksi Jam Keluar
+  col[10] : Koreksi Kode Masuk
+  col[11] : Koreksi Kode Keluar
+  col[12] : Alasan / Keterangan koreksi
+  col[13] : Status Persetujuan koreksi (mis. "Approved by DpH")
+
+Kalau koreksi ada dan sudah Approved, kode & jam ARS pada baris tsb
+DIGANTIKAN oleh nilai koreksi sebelum dievaluasi (lihat analyze()).
 """
 
 import re
@@ -110,12 +119,30 @@ KODE_LIBUR_SHIFT = {"FRE1", "H", "LIB"}
 
 
 def parse_time_str(val):
-    """Parse string waktu 'HH:MM' menjadi datetime.time."""
+    """
+    Parse waktu dari cell XLS menjadi datetime.time.
+
+    Menangani beberapa bentuk representasi:
+    - Sudah berupa datetime.time (langsung dipakai)
+    - Berupa datetime.datetime / pandas.Timestamp — termasuk kasus umum
+      xlrd/pandas yang membaca cell bertipe "time" sebagai datetime dengan
+      tanggal dummy, misal '1899-12-30 07:15:00'
+    - String 'HH:MM' atau 'HH:MM:SS', termasuk yang diawali tanggal dummy
+      di atas (dicari dengan re.search, bukan re.match, supaya tidak gagal
+      hanya karena polanya tidak persis di awal string)
+    """
     if pd.isna(val) or val == "" or val is None:
         return None
+
+    if isinstance(val, time):
+        return val
+    if isinstance(val, (datetime, pd.Timestamp)):
+        return val.time()
+
     s = str(val).strip()
-    # Support HH:MM atau HH:MM:SS
-    match = re.match(r"(\d{1,2}):(\d{2})", s)
+    # Cari pola HH:MM di mana saja dalam string, bukan cuma di awal,
+    # supaya string semacam '1899-12-30 07:15:00' tetap berhasil di-parse.
+    match = re.search(r"(\d{1,2}):(\d{2})", s)
     if match:
         h, m = int(match.group(1)), int(match.group(2))
         if 0 <= h <= 23 and 0 <= m <= 59:
@@ -188,12 +215,18 @@ class AbsensiAnalyzer:
         col_map = {
             0: "tanggal",
             1: "shift_kode",
-            2: "std_masuk",      # Jam masuk standar
-            3: "std_keluar",     # Jam keluar standar
-            4: "ars_masuk",      # Jam masuk aktual (mesin absen)
-            5: "ars_keluar",     # Jam keluar aktual
-            6: "kode_masuk",     # Kode absensi masuk (A, S, I, dst)
-            7: "kode_keluar",    # Kode absensi keluar
+            2: "std_masuk",           # Jam masuk standar
+            3: "std_keluar",          # Jam keluar standar
+            4: "ars_masuk",           # Jam masuk aktual (mesin absen), sebelum koreksi
+            5: "ars_keluar",          # Jam keluar aktual, sebelum koreksi
+            6: "kode_masuk",          # Kode absensi masuk, sebelum koreksi
+            7: "kode_keluar",         # Kode absensi keluar, sebelum koreksi
+            8: "koreksi_ars_masuk",   # Jam masuk hasil koreksi (kalau ada pengajuan)
+            9: "koreksi_ars_keluar",  # Jam keluar hasil koreksi
+            10: "koreksi_kode_masuk",  # Kode masuk hasil koreksi
+            11: "koreksi_kode_keluar",  # Kode keluar hasil koreksi
+            12: "alasan",             # Alasan pengajuan koreksi
+            13: "status_koreksi",     # Status persetujuan koreksi
         }
         # Hanya ambil kolom yang relevan
         available_cols = [c for c in col_map.keys() if c < len(data.columns)]
@@ -223,14 +256,47 @@ class AbsensiAnalyzer:
         izin = 0
         late_days = []
         no_scan_days = []
+        pending_corrections = []  # koreksi yang belum di-approve, dilaporkan terpisah
+
+        def _clean(val):
+            s = str(val).strip().upper()
+            return "" if s in ("", "NAN", "NONE") else s
 
         for _, row in rows.iterrows():
             tanggal   = str(row.get("tanggal", "")).strip()
             shift     = str(row.get("shift_kode", "")).strip().upper()
             std_in    = parse_time_str(row.get("std_masuk"))
-            ars_in    = parse_time_str(row.get("ars_masuk"))
-            kode_in   = str(row.get("kode_masuk", "")).strip().upper()
-            kode_out  = str(row.get("kode_keluar", "")).strip().upper()
+            kode_in_raw  = _clean(row.get("kode_masuk", ""))
+            kode_out_raw = _clean(row.get("kode_keluar", ""))
+            ars_in_raw   = parse_time_str(row.get("ars_masuk"))
+
+            koreksi_kode_in  = _clean(row.get("koreksi_kode_masuk", ""))
+            koreksi_kode_out = _clean(row.get("koreksi_kode_keluar", ""))
+            koreksi_ars_in   = parse_time_str(row.get("koreksi_ars_masuk"))
+            status_koreksi   = _clean(row.get("status_koreksi", ""))
+            alasan           = str(row.get("alasan", "")).strip()
+            alasan           = "" if alasan.lower() == "nan" else alasan
+
+            ada_koreksi = bool(koreksi_kode_in or koreksi_kode_out)
+            koreksi_approved = ada_koreksi and "APPROV" in status_koreksi
+
+            if ada_koreksi and not koreksi_approved:
+                # Ada pengajuan koreksi tapi belum disetujui — jangan langsung
+                # dipakai, tapi jangan didiamkan juga. Tetap pakai kode asli
+                # untuk perhitungan, dan laporkan sebagai catatan terpisah.
+                pending_corrections.append({
+                    "tanggal": tanggal,
+                    "kode_asli": kode_in_raw or kode_out_raw,
+                    "status": status_koreksi or "Belum diketahui",
+                    "alasan": alasan,
+                })
+
+            if koreksi_approved:
+                kode_in, kode_out = koreksi_kode_in, koreksi_kode_out
+                ars_in = koreksi_ars_in if koreksi_ars_in is not None else ars_in_raw
+            else:
+                kode_in, kode_out = kode_in_raw, kode_out_raw
+                ars_in = ars_in_raw
 
             # Skip hari libur (shift FRE1, H, dll)
             if shift in KODE_LIBUR_SHIFT:
@@ -239,7 +305,7 @@ class AbsensiAnalyzer:
             total_workdays += 1
 
             # Tentukan status kehadiran hari ini
-            kode = kode_in if kode_in and kode_in not in ("NAN", "") else kode_out
+            kode = kode_in if kode_in else kode_out
 
             if kode in KODE_SAKIT:
                 sakit += 1
@@ -306,19 +372,27 @@ class AbsensiAnalyzer:
                 f"Terlambat {len(late_days)} kali (total {total_late_minutes} menit)"
             )
 
+        if pending_corrections:
+            tgl_list = ", ".join(p["tanggal"] for p in pending_corrections)
+            warnings.append(
+                f"Ada {len(pending_corrections)} pengajuan koreksi yang BELUM di-approve "
+                f"({tgl_list}) — kode asli masih dipakai sampai disetujui HR"
+            )
+
         result = {
-            "noreg"             : self.info.get("noreg", "—"),
-            "periode"           : self.info.get("periode_raw", "—"),
-            "total_workdays"    : total_workdays,
-            "hadir"             : hadir,
-            "mangkir"           : mangkir,
-            "sakit"             : sakit,
-            "izin"              : izin,
-            "total_late_days"   : len(late_days),
-            "total_late_minutes": total_late_minutes,
-            "late_days"         : late_days,
-            "no_scan_days"      : no_scan_days,
-            "warnings"          : warnings,
+            "noreg"              : self.info.get("noreg", "—"),
+            "periode"            : self.info.get("periode_raw", "—"),
+            "total_workdays"     : total_workdays,
+            "hadir"              : hadir,
+            "mangkir"            : mangkir,
+            "sakit"              : sakit,
+            "izin"               : izin,
+            "total_late_days"    : len(late_days),
+            "total_late_minutes" : total_late_minutes,
+            "late_days"          : late_days,
+            "no_scan_days"       : no_scan_days,
+            "pending_corrections": pending_corrections,
+            "warnings"           : warnings,
         }
 
         log.info(
