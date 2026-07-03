@@ -3,6 +3,8 @@ config.py — Konfigurasi AbsensiChecker
 Isi semua nilai yang diawali TODO sebelum dijalankan.
 """
 
+__version__ = "1.0.0"
+
 import os
 from pathlib import Path
 from dotenv import load_dotenv

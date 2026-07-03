@@ -27,7 +27,27 @@ Kolom yang dipakai (0-indexed, dikonfirmasi dari file asli):
 
 Kalau koreksi ada dan sudah Approved, kode & jam ARS pada baris tsb
 DIGANTIKAN oleh nilai koreksi sebelum dievaluasi (lihat analyze()).
+
+────────────────────────────────────────────────────────────
+CHANGELOG
+  v1.0  Split dari absensi_checker.py monolitik ke modul analyzer.py
+  v1.1  Fix parse_time_str: re.match → re.search + handle datetime/
+        Timestamp langsung, biar cell jam ber-format '1899-12-30 HH:MM:SS'
+        (kuirk xlrd) nggak lagi salah kebaca None → false-positive mangkir
+  v1.2  Baca kolom koreksi (jam & kode) + status persetujuan. Koreksi
+        cuma dipakai kalau statusnya "Approved". Koreksi yang masih
+        pending dilaporkan terpisah di `pending_corrections`, bukan
+        didiamkan atau langsung dipakai
+  v1.3  Pisah KODE_IZIN (izin penuh) vs KODE_HADIR_SEBAGIAN (lupa absen/
+        telat/pulang cepat yang sudah diizinkan) — sebelumnya semua
+        digabung jadi "Izin" padahal karyawan tetap hadir/bekerja.
+        Tambah `hadir_dengan_catatan` untuk transparansi
+  v1.4  Perjelas wording keterangan telat tanpa kode izin resmi —
+        kode-nya tetap "01" (Hadir), bukan kosong
+────────────────────────────────────────────────────────────
 """
+
+__version__ = "1.4.0"
 
 import re
 import logging
@@ -100,19 +120,29 @@ KODE_MANGKIR = {"37"}  # Alpha / tidak masuk tanpa keterangan
 # Kode SAKIT
 KODE_SAKIT = {"11", "12", "13"}
 
-# Kode IZIN (berbagai jenis izin resmi)
+# Kode IZIN PENUH — karyawan benar-benar tidak masuk/tidak di tempat kerja
+# hari itu (cuti, urusan keluarga, dinas luar, training, dll).
 KODE_IZIN = {
-    "02", "03", "04", "05", "06",
-    "07", "07A",                        # cuti
+    "06",
+    "07", "07A",                       # cuti tahunan
     "14", "15", "16", "17", "18",
-    "19", "20", "21", "22", "23", "24", "25",
-    "32", "32A", "33", "33A",          # training/dinas
-    "40", "44", "45", "45A",
-    "46", "46A", "47", "47A", "48", "48A",
+    "19", "20", "21", "22", "23", "24", "25",   # urusan keluarga
+    "26", "26A",                       # izin tanpa upah
+    "32", "32A", "33", "33A",          # training/dinas luar
+    "40", "45", "45A", "48", "48A",
 }
 
-# Kode TERLAMBAT dengan instruksi (sudah diizinkan, tidak dihitung pelanggaran)
-KODE_TERLAMBAT_IZIN = {"02", "03", "47", "47A"}
+# Kode HADIR SEBAGIAN — karyawan tetap bekerja/hadir hari itu, cuma ada
+# catatan administratif: telat atau pulang cepat yang SUDAH diizinkan
+# resmi, atau lupa scan yang sudah dikoreksi & disetujui. Ini TIDAK
+# dihitung sebagai Izin (absen), tapi tetap dihitung Hadir dengan catatan.
+KODE_HADIR_SEBAGIAN = {
+    "02", "03",     # ijin terlambat kurang/lebih 3 jam
+    "04", "05",     # ijin pulang cepat kurang/lebih 3 jam
+    "44",           # lupa absen (sudah dikoreksi & disetujui)
+    "46", "46A",    # pulang cepat dengan instruksi
+    "47", "47A",    # datang terlambat dengan instruksi
+}
 
 # Kode shift hari LIBUR (tidak dihitung hari kerja)
 KODE_LIBUR_SHIFT = {"FRE1", "H", "LIB"}
@@ -256,7 +286,8 @@ class AbsensiAnalyzer:
         izin = 0
         late_days = []
         no_scan_days = []
-        pending_corrections = []  # koreksi yang belum di-approve, dilaporkan terpisah
+        pending_corrections = []   # koreksi yang belum di-approve, dilaporkan terpisah
+        hadir_dengan_catatan = []  # hadir, tapi ada telat/pulang cepat/lupa absen yg sudah diizinkan
 
         def _clean(val):
             s = str(val).strip().upper()
@@ -311,27 +342,39 @@ class AbsensiAnalyzer:
                 sakit += 1
                 continue
 
-            if kode in KODE_IZIN:
-                izin += 1
-                continue
-
             if kode in KODE_MANGKIR:
                 mangkir += 1
                 continue
 
-            # Tidak ada scan & tidak ada kode izin/sakit → kemungkinan mangkir
-            if ars_in is None and kode not in ("01",) and kode not in KODE_IZIN and kode not in KODE_SAKIT:
+            if kode in KODE_IZIN:
+                izin += 1
+                continue
+
+            # Kode di bawah ini artinya karyawan tetap HADIR/bekerja hari itu,
+            # cuma ada catatan administratif: telat/pulang cepat yang sudah
+            # diizinkan resmi, atau lupa scan yang sudah dikoreksi & disetujui.
+            # Ini jangan dihitung sebagai Izin (bukan hari absen penuh).
+            if kode in KODE_HADIR_SEBAGIAN:
+                hadir += 1
+                deskripsi = KODE_ABSENSI.get(kode, kode)
+                ket = f"{deskripsi} (disetujui)" if kode != "44" else deskripsi
+                hadir_dengan_catatan.append({
+                    "tanggal": tanggal,
+                    "kode": kode,
+                    "keterangan": ket,
+                    "alasan": alasan,
+                })
+                continue
+
+            # Tidak ada scan & tidak ada kode apapun → kemungkinan mangkir
+            if ars_in is None and kode not in ("01",):
                 no_scan_days.append(tanggal)
                 mangkir += 1
                 continue
 
             hadir += 1
 
-            # Cek keterlambatan
-            # Skip kode terlambat yang sudah diizinkan (02, 03, 47, 47A)
-            if kode in KODE_TERLAMBAT_IZIN:
-                continue
-
+            # Cek keterlambatan (untuk hari tanpa kode izin apapun)
             if std_in and ars_in:
                 MAX_LATE_MINUTES = 240  # lebih dari 4 jam = anomali scan
                 diff = time_diff_minutes(std_in, ars_in)
@@ -347,6 +390,15 @@ class AbsensiAnalyzer:
                         "jam_masuk_standar": std_in.strftime("%H:%M"),
                         "jam_masuk_aktual": ars_in.strftime("%H:%M"),
                         "telat_menit": diff
+                    })
+                    hadir_dengan_catatan.append({
+                        "tanggal": tanggal,
+                        "kode": kode or "01",
+                        "keterangan": (
+                            f"Terlambat {diff} menit — kode absen \"{kode or '01'}\" (Hadir), "
+                            f"tidak ada kode izin telat resmi (02/03/47/47A) yang diajukan"
+                        ),
+                        "alasan": "",
                     })
 
         total_late_minutes = sum(d["telat_menit"] for d in late_days)
@@ -380,19 +432,20 @@ class AbsensiAnalyzer:
             )
 
         result = {
-            "noreg"              : self.info.get("noreg", "—"),
-            "periode"            : self.info.get("periode_raw", "—"),
-            "total_workdays"     : total_workdays,
-            "hadir"              : hadir,
-            "mangkir"            : mangkir,
-            "sakit"              : sakit,
-            "izin"               : izin,
-            "total_late_days"    : len(late_days),
-            "total_late_minutes" : total_late_minutes,
-            "late_days"          : late_days,
-            "no_scan_days"       : no_scan_days,
-            "pending_corrections": pending_corrections,
-            "warnings"           : warnings,
+            "noreg"               : self.info.get("noreg", "—"),
+            "periode"             : self.info.get("periode_raw", "—"),
+            "total_workdays"      : total_workdays,
+            "hadir"               : hadir,
+            "mangkir"             : mangkir,
+            "sakit"               : sakit,
+            "izin"                : izin,
+            "total_late_days"     : len(late_days),
+            "total_late_minutes"  : total_late_minutes,
+            "late_days"           : late_days,
+            "no_scan_days"        : no_scan_days,
+            "hadir_dengan_catatan": hadir_dengan_catatan,
+            "pending_corrections" : pending_corrections,
+            "warnings"            : warnings,
         }
 
         log.info(

@@ -16,7 +16,7 @@ source venv/bin/activate
 
 # Jalankan checker (default: bulan lalu)
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Menjalankan AbsensiChecker..."
-python3 absensi_checker.py
+python3 main.py
 
 EXIT_CODE=$?
 if [ $EXIT_CODE -eq 0 ]; then
